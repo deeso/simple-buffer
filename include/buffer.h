@@ -125,10 +125,12 @@ class Buffer {
         // to len || this->length()
         // allocate buffer and return if its possible to read
         size_t read(char *buf, size_t len) {
-            // TODO Lock here
-            size_t bytes_read = this->read_at(buf, len, this->_read_pos);
-            if (bytes_read > 0 && bytes_read != BAD_READ)
-                this->_read_pos += bytes_read;
+            // Lock the read on potentially shared pointer
+            auto bytes_read = this->read_at(buf, len, this->_read_pos);
+                if (bytes_read > 0 && bytes_read != BAD_READ){
+                    std::lock_guard<std::mutex> guard(_buffer_readable);
+                    this->_read_pos += bytes_read;
+                }
             return bytes_read;
         }
 
@@ -143,37 +145,40 @@ class Buffer {
             //if (!safe_read(pos) || !safe_read(pos+len)){}
 
             if (_bytes_read != BAD_READ && _bytes_read > 0 ){
-                std::lock_guard<std::mutex> guard(_buffer_readable);
-                memcpy(buf+pos, this->_data, _bytes_read);
+                memcpy(buf, this->_data+pos, _bytes_read);
             }
             return _bytes_read;
         }
 
         size_t write(const char *buf, size_t len) {
-            size_t bytes_written = this->write_at(buf, len, this->_write_pos);
+            auto bytes_written = BAD_READ;
+            bytes_written = this->write_at(buf, len, this->_write_pos);
             if (bytes_written != BAD_READ){
+                std::lock_guard<std::mutex> guard_write(_buffer_writeable);
                 this->_write_pos += bytes_written;
             }
             return bytes_written;
         }
-        bool realloc_buffer(size_t how_much_more);
+        bool realloc_buffer(size_t new_size);
         bool need_realloc(size_t pos, size_t len) {
             return !int_overflow(pos, len) &&
                    !inbounds(pos+len) &&
                    _buffer_type == BufferPolicy::Dynamic;
         }
 
+
+
         size_t write_at(const char *buf, size_t len, size_t pos) {
 
             auto update_ptr = pos == _write_pos;
             auto bytes_written = BAD_READ;
             if (need_realloc(pos, len)) {
-                auto result = realloc_buffer(pos+len - _byte_size);
+                auto result = realloc_buffer(pos+len);
                 assert(_data!= nullptr);
-
                 // realloc failed, so not attempting to write the data
                 if (!result) return bytes_written;
                 assert(pos+len < _byte_size);
+                std::lock_guard<std::mutex> guard(_buffer_writeable);
             }
             // handle int_overflow case explicitly
             if (simple_buffer::Buffer::int_overflow(pos, len) || len == 0) {}
@@ -187,6 +192,7 @@ class Buffer {
                 std::lock_guard<std::mutex> guard(_buffer_writeable);
                 memcpy(this->_data+pos, buf, bytes_written);
             }
+
             return bytes_written;
         }
 
@@ -205,29 +211,30 @@ class Buffer {
             for (auto i = 0; i < this->_byte_size; i++) *(this->_data+i) = 0;
         }
 
+        template <typename PUT_T>
+        std::optional<std::size_t> put(PUT_T x){
+            auto z = this->write((char *)&x, sizeof(x));;
+            return (z!=BAD_READ && z != 0) ? std::optional<size_t>{z} : std::nullopt;
+        }
+
+        template <typename PUT_T>
+        std::optional<std::size_t> put(PUT_T x, size_t pos){
+            auto z = this->write_at((char *)&x, sizeof(x), pos);
+            return (z!=BAD_READ && z != 0) ? std::optional<size_t>{z} : std::nullopt;
+        }
+
+        template<typename PEEK_T>
+        std::optional<PEEK_T> peek() {
+            return this->peek<PEEK_T>(_read_pos);
+        }
+        template<typename PEEK_T>
+        std::optional<PEEK_T> peek(size_t pos){
+            PEEK_T x;
+            auto sz = this->read_at((char *)&x, sizeof (PEEK_T), pos);
+            return sz != BAD_READ ? std::optional<PEEK_T>{x} : std::nullopt;
+        }
 
 
-
-    std::optional<size_t> put(uint8_t x);
-    std::optional<size_t> put(uint8_t x, size_t pos);
-//    size_t put(uint16_t x, bool lendian=false);
-//    size_t put(uint16_t x, size_t pos, bool lendian=false);
-//    size_t put(uint32_t x, bool lendian=false);
-//    size_t put(uint32_t x, size_t pos, bool lendian=false);
-//    size_t put(uint64_t x, bool lendian=false);
-//    size_t put(uint64_t x, size_t pos, bool lendian=false);
-
-        std::optional<uint8_t> peak_uint8();
-        std::optional<uint8_t> peak_uint8(size_t pos);
-//    uint16_t peak_uint16(bool lendian=false);
-//    uint16_t peak_uint16(size_t pos, bool lendian=false);
-//    uint32_t peak_uint32(bool lendian=false);
-//    uint32_t peak_uint32(size_t pos, bool lendian=false);
-//    uint64_t peak_uint64(bool lendian=false);
-//    uint64_t peak_uint64(size_t pos, bool lendian=false);
-
-        //    void put(uint32_t x);
-//    void put(uint64_t x);
 };
 
 
